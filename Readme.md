@@ -44,7 +44,7 @@ Lorsque vous exécutez le script, un menu interactif s'affiche avec les options 
 3. **Mise à jour du DNS** : Met à jour les enregistrements DNS pour le serveur Samba ADDC.
 4. **Quitter** : Quitte le script.
 
-### Anonymisation des IP et des noms de machine
+### Configuration des IP et des noms de machine
 
 Le script utilise des variables pour les noms de machine et les adresses IP. Voici les variables que vous devez modifier pour adapter le script à votre environnement :
 
