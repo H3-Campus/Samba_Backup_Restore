@@ -1,6 +1,3 @@
-Voici un fichier README en Markdown pour votre script, prêt à être utilisé sur un site GitHub :
-
-```markdown
 # Samba Backup & Restore Script
 
 ## Description
@@ -54,11 +51,11 @@ Le script utilise des variables pour les noms de machine et les adresses IP. Voi
 - `ADMIN_USER` : Nom d'utilisateur administrateur (par défaut : `Administrator`)
 - `DOMAIN` : Domaine Samba (par défaut : `example.lan`)
 - `SERVER` : Nom du serveur Samba ADDC (par défaut : `srv-example-addc01`)
-- `IP` : Adresse IP du serveur Samba ADDC (par défaut : `192.168.1.210`)
+- `IP` : Adresse IP du serveur Samba ADDC (par défaut : `192.168.1.10`)
 - `REVERSE_IP` : Adresse IP inversée pour les enregistrements PTR (par défaut : `1.168.192.in-addr.arpa`)
 - `OLD_SERVER` : Ancien nom du serveur (par défaut : `srv-old-addc01`)
-- `OLD_IP` : Ancienne adresse IP du serveur (par défaut : `192.168.156.210`)
-- `OLD_REVERSE_IP` : Ancienne adresse IP inversée pour les enregistrements PTR (par défaut : `156.168.192.in-addr.arpa`)
+- `OLD_IP` : Ancienne adresse IP du serveur (par défaut : `192.168.2.210`)
+- `OLD_REVERSE_IP` : Ancienne adresse IP inversée pour les enregistrements PTR (par défaut : `2.168.192.in-addr.arpa`)
 - `ADMIN_EMAIL` : Adresse e-mail de l'administrateur (par défaut : `admin.example.com`)
 
 Modifiez ces variables en haut du script pour correspondre à votre configuration spécifique.
@@ -70,11 +67,11 @@ Modifiez ces variables en haut du script pour correspondre à votre configuratio
 ADMIN_USER="Administrator"
 DOMAIN="example.lan"
 SERVER="srv-example-addc01"
-IP="192.168.1.210"
+IP="192.168.1.10"
 REVERSE_IP="1.168.192.in-addr.arpa"
 OLD_SERVER="srv-old-addc01"
-OLD_IP="192.168.156.210"
-OLD_REVERSE_IP="156.168.192.in-addr.arpa"
+OLD_IP="192.168.2.10"
+OLD_REVERSE_IP="2.168.192.in-addr.arpa"
 ADMIN_EMAIL="admin.example.com"
 ```
 
@@ -85,6 +82,4 @@ Ce script doit être utilisé avec précaution. Assurez-vous de tester les sauve
 ## Licence
 
 Ce projet est sous licence MIT. Voir le fichier LICENSE pour plus de détails.
-```
 
-N'hésitez pas à adapter ce fichier README selon vos besoins spécifiques. Si vous avez d'autres questions ou modifications, je suis là pour vous aider !
