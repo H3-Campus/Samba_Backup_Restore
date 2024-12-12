@@ -43,6 +43,22 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# fonction asauvegarde des GPO
+backup_gpo() {
+    echo -e "${YELLOW}Sauvegarde des GPO...${NC}"
+    GPO_BACKUP_DIR="$BACKUP_DIR/gpo_backup_$DATE"
+    mkdir -p "$GPO_BACKUP_DIR"
+    
+    # Utiliser samba-tool pour sauvegarder les GPO
+    samba-tool gpo backup "$GPO_BACKUP_DIR" -U "$ADMIN_USER"
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Sauvegarde des GPO terminée dans $GPO_BACKUP_DIR${NC}"
+    else
+        echo -e "${RED}Erreur lors de la sauvegarde des GPO${NC}"
+    fi
+}
+
 # Fonction de sauvegarde Samba
 backup_samba() {
     echo -e "${YELLOW}Début de la sauvegarde Samba...${NC}"
@@ -64,6 +80,9 @@ backup_samba() {
     
     # Suppression des anciennes sauvegardes
     find "$BACKUP_DIR" -name "samba_backup_*" -type f -mtime +30 -delete
+
+    # Sauvegarde des GPO
+    backup_gpo
     
     # Création de l'archive
     tar -czvf "$ARCHIVE" "$SAMBA_PRIVATE" "$SAMBA_SYSVOL" "$SAMBA_CONFIG"
@@ -77,6 +96,31 @@ backup_samba() {
     # En mode automatique, on ajoute des logs si nécessaire
     if [[ "$AUTO_MODE" = true ]]; then
         echo "[$(date)] Sauvegarde Samba automatique : $ARCHIVE" >> /var/log/samba_backup.log
+    fi
+}
+
+restore_gpo() {
+    local BACKUP_PATH="$1"
+    echo -e "${YELLOW}Début de la restauration des GPO...${NC}"
+    
+    # Chercher le répertoire de sauvegarde des GPO
+    local GPO_BACKUP_DIR=$(find "$BACKUP_DIR" -type d -name "gpo_backup_*" | sort -r | head -n 1)
+    
+    if [[ -z "$GPO_BACKUP_DIR" ]]; then
+        echo -e "${RED}Aucune sauvegarde de GPO trouvée.${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}Restauration des GPO depuis $GPO_BACKUP_DIR${NC}"
+    
+    # Utiliser samba-tool pour restaurer les GPO
+    samba-tool gpo restore "$GPO_BACKUP_DIR" -U "$ADMIN_USER" --password="$ADMIN_PASS"
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Restauration des GPO terminée.${NC}"
+    else
+        echo -e "${RED}Erreur lors de la restauration des GPO${NC}"
+        return 1
     fi
 }
 
@@ -100,11 +144,21 @@ restore_samba() {
     echo -e "${GREEN}Sauvegarde sélectionnée : $BACKUP_FILE${NC}"
     echo -e "${YELLOW}Arrêt du service Samba...${NC}"
     systemctl stop samba-ad-dc
+    
     BACKUP_ORIG_DIR="$BACKUP_DIR/original_$DATE"
     mkdir -p "$BACKUP_ORIG_DIR"
     tar -czvf "$BACKUP_ORIG_DIR/original_samba_files.tar.gz" "$SAMBA_PRIVATE" "$SAMBA_SYSVOL" "$SAMBA_CONFIG"
     echo -e "${GREEN}Sauvegarde des fichiers originaux dans $BACKUP_ORIG_DIR${NC}"
+    
     tar -xzvf "$BACKUP_PATH" -C /
+    
+    # Demander le mot de passe admin pour la restauration des GPO
+    read -sp "Entrez le mot de passe administrateur pour restaurer les GPO : " ADMIN_PASS
+    echo
+    
+    # Appeler la fonction de restauration des GPO
+    restore_gpo "$BACKUP_PATH"
+    
     echo -e "${GREEN}Fichiers restaurés depuis $BACKUP_PATH${NC}"
     ACL_FILE="$BACKUP_DIR/${BACKUP_FILE%.tar.gz}_acl.acl"
     if [[ -f "$ACL_FILE" ]]; then
