@@ -20,6 +20,23 @@ OLD_IP="192.168.*.*"
 OLD_REVERSE_IP="*.168.192.in-addr.arpa"
 ADMIN_EMAIL="*.h3campus.fr"
 
+# Mode automatique (défaut à false)
+AUTO_MODE=false
+
+# Parsing des arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --auto)
+            AUTO_MODE=true
+            shift
+            ;;
+        *)
+            echo -e "${RED}Option non reconnue: $1${NC}"
+            exit 1
+            ;;
+    esac
+done
+
 # Vérification des privilèges root
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}Ce script doit être exécuté en tant que root.${NC}"
@@ -30,17 +47,37 @@ fi
 backup_samba() {
     echo -e "${YELLOW}Début de la sauvegarde Samba...${NC}"
     mkdir -p "$BACKUP_DIR"
-    echo -e "${YELLOW}Entrez un nom pour la sauvegarde (laisser vide pour générer automatiquement) :${NC}"
-    read -r CUSTOM_NAME
-    if [[ -z "$CUSTOM_NAME" ]]; then
+    
+    # Mode automatique : génération automatique du nom de sauvegarde
+    if [[ "$AUTO_MODE" = true ]]; then
         CUSTOM_NAME="samba_backup_$DATE"
+        echo -e "${GREEN}Mode automatique activé. Sauvegarde : $CUSTOM_NAME${NC}"
+    else
+        echo -e "${YELLOW}Entrez un nom pour la sauvegarde (laisser vide pour générer automatiquement) :${NC}"
+        read -r CUSTOM_NAME
+        if [[ -z "$CUSTOM_NAME" ]]; then
+            CUSTOM_NAME="samba_backup_$DATE"
+        fi
     fi
+    
     ARCHIVE="$BACKUP_DIR/${CUSTOM_NAME}.tar.gz"
+    
+    # Suppression des anciennes sauvegardes
+    find "$BACKUP_DIR" -name "samba_backup_*" -type f -mtime +30 -delete
+    
+    # Création de l'archive
     tar -czvf "$ARCHIVE" "$SAMBA_PRIVATE" "$SAMBA_SYSVOL" "$SAMBA_CONFIG"
     echo -e "${GREEN}Fichiers sauvegardés dans $ARCHIVE${NC}"
+    
+    # Sauvegarde des ACL
     ACL_FILE="$BACKUP_DIR/${CUSTOM_NAME}_acl.acl"
     getfacl -R "$SAMBA_SYSVOL" > "$ACL_FILE"
     echo -e "${GREEN}ACL sauvegardées dans $ACL_FILE${NC}"
+    
+    # En mode automatique, on ajoute des logs si nécessaire
+    if [[ "$AUTO_MODE" = true ]]; then
+        echo "[$(date)] Sauvegarde Samba automatique : $ARCHIVE" >> /var/log/samba_backup.log
+    fi
 }
 
 # Fonction de restauration Samba
@@ -131,41 +168,45 @@ verify_dns_records() {
     host -t SRV _kpasswd._udp.$DOMAIN
 }
 
-# Menu principal
-echo -e "${YELLOW}Samba Backup & Restore Script${NC}"
-echo -e "${GREEN}1. Sauvegarder Samba${NC}"
-echo -e "${GREEN}2. Restaurer Samba${NC}"
-echo -e "${GREEN}3. Mise à jour du DNS${NC}"
-echo -e "${GREEN}4. Quitter${NC}"
-echo -e "Choisissez une option :"
-read -r OPTION
+# Menu principal modifié pour supporter le mode auto
+if [[ "$AUTO_MODE" = true ]]; then
+    backup_samba
+else
+    echo -e "${YELLOW}Samba Backup & Restore Script${NC}"
+    echo -e "${GREEN}1. Sauvegarder Samba${NC}"
+    echo -e "${GREEN}2. Restaurer Samba${NC}"
+    echo -e "${GREEN}3. Mise à jour du DNS${NC}"
+    echo -e "${GREEN}4. Quitter${NC}"
+    echo -e "Choisissez une option :"
+    read -r OPTION
 
-case $OPTION in
-    1)
-        backup_samba
-        ;;
-    2)
-        restore_samba
-        ;;
-    3)
-        read -sp "Enter password for $ADMIN_USER: " ADMIN_PASS
-        echo
-        echo -e "\e[34mSuppression des anciens enregistrements DNS...\e[0m"
-        delete_old_dns_records
-        echo -e "\e[32mAjout des nouveaux enregistrements DNS...\e[0m"
-        add_dns_records
-        echo -e "\e[35mMise à jour de l'enregistrement SOA...\e[0m"
-        update_soa_record
-        echo -e "\e[33mVérification des enregistrements DNS...\e[0m"
-        verify_dns_records
-        echo -e "\e[36mMise à jour du DNS terminée.\e[0m"
-        ;;
-    4)
-        echo -e "${GREEN}Quitter...${NC}"
-        exit 0
-        ;;
-    *)
-        echo -e "${RED}Option invalide.${NC}"
-        exit 1
-        ;;
-esac
+    case $OPTION in
+        1)
+            backup_samba
+            ;;
+        2)
+            restore_samba
+            ;;
+        3)
+            read -sp "Enter password for $ADMIN_USER: " ADMIN_PASS
+            echo
+            echo -e "\e[34mSuppression des anciens enregistrements DNS...\e[0m"
+            delete_old_dns_records
+            echo -e "\e[32mAjout des nouveaux enregistrements DNS...\e[0m"
+            add_dns_records
+            echo -e "\e[35mMise à jour de l'enregistrement SOA...\e[0m"
+            update_soa_record
+            echo -e "\e[33mVérification des enregistrements DNS...\e[0m"
+            verify_dns_records
+            echo -e "\e[36mMise à jour du DNS terminée.\e[0m"
+            ;;
+        4)
+            echo -e "${GREEN}Quitter...${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Option invalide.${NC}"
+            exit 1
+            ;;
+    esac
+fi
