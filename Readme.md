@@ -10,8 +10,8 @@ Ce script Bash permet de sauvegarder et de restaurer les configurations et les d
 - **Restauration complète** des sauvegardes avec réinitialisation des permissions ACL.
 - **Mise à jour des enregistrements DNS** pour le serveur Samba ADDC.
 - **Interface utilisateur interactive** avec des messages colorés pour une meilleure lisibilité.
-- **L'option --auto permet de lancer un backup en automatique***
-- **Lors du lancement d'un backup, les backups de plus de 30 jours sont supprimés***
+- **L'option --auto permet de lancer un backup en automatique**
+- **Lors du lancement d'un backup, les backups de plus de 30 jours sont supprimés**
 
 ## Installation
 
