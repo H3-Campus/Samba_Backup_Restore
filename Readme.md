@@ -6,7 +6,7 @@ Ce script Bash permet de sauvegarder et de restaurer les configurations et les d
 
 ## Fonctionnalités
 
-- **Sauvegarde complète** des répertoires privés, sysvol et de configuration de Samba.
+- **Sauvegarde complète** des répertoires privés, sysvol, gpo et de configuration de Samba.
 - **Restauration complète** des sauvegardes avec réinitialisation des permissions ACL.
 - **Mise à jour des enregistrements DNS** pour le serveur Samba ADDC.
 - **Interface utilisateur interactive** avec des messages colorés pour une meilleure lisibilité.
