@@ -4,7 +4,7 @@
 SAMBA_PRIVATE="/var/lib/samba/private"
 SAMBA_SYSVOL="/var/lib/samba/sysvol"
 SAMBA_CONFIG="/etc/samba"
-BACKUP_DIR="/sauvegardes/samba"
+BACKUP_DIR="/mnt/Backups/srv-mtp-addc01/sauvegardes/samba"
 DATE=$(date +%Y%m%d_%H%M%S)
 GREEN="\033[1;32m"
 RED="\033[1;31m"
