@@ -113,8 +113,13 @@ restore_gpo() {
     
     echo -e "${GREEN}Restauration des GPO depuis $GPO_BACKUP_DIR${NC}"
     
+    # Lister les GPO disponibles dans le répertoire de sauvegarde
+    local GPO_LIST=$(ls "$GPO_BACKUP_DIR")
+    
     # Utiliser samba-tool pour restaurer les GPO
-    samba-tool gpo restore "$GPO_BACKUP_DIR" -U "$ADMIN_USER" --password="$ADMIN_PASS"
+    for gpo in $GPO_LIST; do
+        samba-tool gpo restore "$gpo" "$GPO_BACKUP_DIR" -U "$ADMIN_USER" --password="$ADMIN_PASS"
+    done
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Restauration des GPO terminée.${NC}"
