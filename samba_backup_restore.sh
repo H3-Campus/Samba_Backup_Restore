@@ -19,309 +19,398 @@ DOMAIN="h3adm.lan"
 LOG_FILE="/var/log/samba_backup.log"
 MAIL_TO="admin@h3campus.fr"             # Adresse email pour les notifications
 
-# Mode automatique (défaut à false)
-AUTO_MODE=false
-RETENTION_DAYS=30                      # Nombre de jours de conservation des backups
 
-# Fonction de journalisation
+# Ports requis pour Samba AD
+REQUIRED_PORTS=(
+    53    # DNS
+    88    # Kerberos
+    123	  # NTP
+    139   # NetBIOS
+    389   # LDAP
+    445   # SMB
+    464   # Kerberos password
+    636   # LDAPS
+    3268  # Global Catalog
+    3269  # Global Catalog SSL
+    8385  # Port utilisé par Syncthing pour l'interface du serveur de relais (STRelaySrv)  
+    22000 # Port utilisé par Syncthing pour les transferts de fichiers  
+    22001 # Port utilisé par Syncthing pour les connexions relayées  
+    22027 # Port utilisé par Syncthing pour la découverte globale  
+    161   # Port utilisé par SNMP (Simple Network Management Protocol) pour les requêtes de gestion 
+)
+
+# Couleurs pour le rapport HTML
+COLOR_GREEN="#e6ffe6"
+COLOR_RED="#ffe6e6"
+COLOR_YELLOW="#fffae6"
+
+# Fonction de logging
 log_message() {
-    local message="$1"
-    local level="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+# Vérification des outils LDAP
+check_ldap_tools() {
+    local ldap_packages=("ldap-utils")
+    local missing_packages=()
+
+    for pkg in "${ldap_packages[@]}"; do
+        if ! dpkg -s "$pkg" &> /dev/null; then
+            missing_packages+=("$pkg")
+        fi
+    done
+
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        log_message "Installation des paquets LDAP manquants : ${missing_packages[*]}"
+        apt-get update
+apt-get install -y "${missing_packages[@]}"
+    fi
+}
+
+# Vérification de la cohérence de la base de données
+check_database_consistency() {
+    local db_checks=()
+    local temp_file="/tmp/dbcheck_output.txt"
     
-    # Afficher le message sur la console
-    if [[ "$level" == "ERROR" ]]; then
-        echo -e "${RED}[ERROR] $message${NC}"
-    elif [[ "$level" == "WARNING" ]]; then
-        echo -e "${YELLOW}[WARNING] $message${NC}"
+    log_message "Début de la vérification de la base de données AD"
+    
+    # Vérification de la base de données avec dbcheck
+    if samba-tool dbcheck --cross-ncs > "$temp_file" 2>&1; then
+        db_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Base de données AD</td><td>Cohérente</td></tr>")
     else
-        echo -e "${GREEN}[INFO] $message${NC}"
+        db_checks+=("<tr style='background-color: $COLOR_RED;'><td>Base de données AD</td><td>Problèmes détectés</td></tr>")
+        
+        # Extraction et formatage des erreurs
+        local db_errors=$(cat "$temp_file" | sed 's/</\&lt;/g' | sed 's/>/\&gt;/g' | sed 's/\n/<br>/g')
+        db_checks+=("<tr><td colspan='2'>Erreurs détectées:<br><pre>$db_errors</pre></td></tr>")
     fi
-    
-    # Enregistrer dans le fichier journal
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] [$level] $message" >> "$LOG_FILE"
-}
 
-# Fonction d'envoi d'email
-send_email() {
-    local subject="$1"
-    local body="$2"
-    
-    echo "$body" | mail -s "$subject" "$MAIL_TO"
-    
-    if [ $? -eq 0 ]; then
-        log_message "Email envoyé à $MAIL_TO" "INFO"
+    # Vérification des objets supprimés
+    local deleted_objects=$(samba-tool dbcheck --cross-ncs --fix --yes 2>&1 | grep "fix_all_deleted_objects")
+    if [ -n "$deleted_objects" ]; then
+        db_checks+=("<tr style='background-color: $COLOR_YELLOW;'><td>Objets supprimés</td><td>Nettoyage effectué</td></tr>")
+    fi
+
+    # Vérification de la réplication (si applicable dans votre environnement)
+    if samba-tool drs showrepl 2>/dev/null | grep -q "failed"; then
+        db_checks+=("<tr style='background-color: $COLOR_RED;'><td>Réplication AD</td><td>Erreurs de réplication détectées</td></tr>")
     else
-        log_message "Échec de l'envoi d'email à $MAIL_TO" "ERROR"
+        db_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Réplication AD</td><td>Fonctionnelle</td></tr>")
     fi
+
+    # Nettoyage
+    rm -f "$temp_file"
+
+    echo "${db_checks[@]}"
 }
 
-# Fonction pour vérifier et monter le partage réseau
-check_mount() {
-    # Vérifier si le point de montage existe
-    if [ ! -d "$BACKUP_MOUNT" ]; then
-        mkdir -p "$BACKUP_MOUNT"
-        log_message "Création du point de montage $BACKUP_MOUNT" "INFO"
-    fi
+# Vérification des processus Samba
+check_samba_processes() {
+    local processes_to_check=(
+        "samba" 
+        "winbind_server" 
+        "ldap_server" 
+        "dns" 
+        "kdc_server" 
+        "dreplsrv" 
+        "rpc_server" 
+        "cldap_server" 
+        "nbt_server"
+    )
+    local process_status=()
+
+    log_message "Début de la vérification des processus Samba"
     
-    # Vérifier si le partage est déjà monté
-    if mountpoint -q "$BACKUP_MOUNT"; then
-        log_message "Le partage est déjà monté sur $BACKUP_MOUNT" "INFO"
-        return 0
-    fi
+    local samba_processes=$(samba-tool processes | tail -n +3 | awk '{print $1}' | sort | uniq)
+
+    for proc in "${processes_to_check[@]}"; do
+        if echo "$samba_processes" | grep -q "$proc"; then
+            process_status+=("<tr style='background-color: $COLOR_GREEN;'><td>$proc</td><td>Actif</td></tr>")
+        else
+            process_status+=("<tr style='background-color: $COLOR_RED;'><td>$proc</td><td>Inactif</td></tr>")
+        fi
+    done
+
+    echo "${process_status[@]}"
+}
+
+check_syncthing_processes() {
+    local processes_to_check=(
+        "syncthing" 
+    )
+    local process_status=()
+    #log_message "Début de la vérification des processus Syncthing"
     
-    # Tenter de monter le partage
-    mount -t cifs "$BACKUP_SHARE" "$BACKUP_MOUNT" -o username="$BACKUP_USER",password="$BACKUP_PASSWORD",vers=3.0
+    # Correction: utilisation de ps ou pgrep pour vérifier les processus
+    local syncthing_processes=$(ps aux | awk '{print $11}' | sort | uniq)
+    for proc in "${processes_to_check[@]}"; do
+        if echo "$syncthing_processes" | grep -q "$proc"; then
+            process_status+=("<tr style='background-color: $COLOR_GREEN;'><td>$proc</td><td>Actif</td></tr>")
+        else
+            process_status+=("<tr style='background-color: $COLOR_RED;'><td>$proc</td><td>Inactif</td></tr>")
+        fi
+    done
+    echo "${process_status[@]}"
+}
+
+check_tis_services() {
+    local services_to_check=(
+        "tis-sysvolsync"
+        "tis-sysvolacl"
+    )
+    local service_status=()
+    #log_message "Début de la vérification des services TIS"
     
-    if [ $? -eq 0 ]; then
-        log_message "Partage $BACKUP_SHARE monté avec succès sur $BACKUP_MOUNT" "INFO"
-        return 0
+    for service in "${services_to_check[@]}"; do
+        # Vérifier si le service est activé (enabled au démarrage)
+        if systemctl is-enabled "$service" &>/dev/null; then
+            local enabled_status="Activé au démarrage"
+            local enabled_color="$COLOR_GREEN"
+        else
+            local enabled_status="Non activé au démarrage"
+            local enabled_color="$COLOR_RED"
+        fi
+        
+        # Vérifier si le service est démarré (running)
+        if systemctl is-active "$service" &>/dev/null; then
+            local active_status="Démarré"
+            local active_color="$COLOR_GREEN"
+        else
+            local active_status="Arrêté"
+            local active_color="$COLOR_RED"
+        fi
+        
+        service_status+=("<tr><td style='background-color: $enabled_color;'>$service</td><td style='background-color: $enabled_color;'>$enabled_status</td><td style='background-color: $active_color;'>$active_status</td></tr>")
+    done
+    
+    echo "${service_status[@]}"
+}
+
+# Vérification détaillée Kerberos
+check_kerberos() {
+    local kerberos_checks=()
+    local password="Linux741!"
+
+    # Demander interactivement le mot de passe
+    #read -s -p "Mot de passe pour $ADMIN_USER : " password
+    echo
+
+    local kdc_processes=$(samba-tool processes | grep "kdc_server")
+    
+    if [ -n "$kdc_processes" ]; then
+        if echo "$password" | kinit "$ADMIN_USER" &> /dev/null; then
+            kerberos_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Authentification Kerberos</td><td>Actif et Valide</td></tr>")
+        else
+            kerberos_checks+=("<tr style='background-color: $COLOR_RED;'><td>Authentification Kerberos</td><td>Problème détecté</td></tr>")
+            kerberos_checks+=("<tr><td colspan='2'>Problème avec l'authentification Kerberos pour l'utilisateur '$ADMIN_USER'.</td></tr>")
+        fi
     else
-        log_message "Impossible de monter le partage $BACKUP_SHARE sur $BACKUP_MOUNT" "ERROR"
-        send_email "ERREUR: Échec du montage du partage pour la sauvegarde Samba" "Le script de sauvegarde n'a pas pu monter le partage réseau $BACKUP_SHARE sur $BACKUP_MOUNT. Veuillez vérifier la connectivité réseau et les identifiants."
-        return 1
+        kerberos_checks+=("<tr style='background-color: $COLOR_RED;'><td>Authentification Kerberos</td><td>Problème détecté</td></tr>")
+        kerberos_checks+=("<tr><td colspan='2'>Service KDC inactif.</td></tr>")
     fi
+
+    echo "${kerberos_checks[@]}"
 }
 
-# Fonction de sauvegarde des GPO
-backup_gpo() {
-    log_message "Sauvegarde des GPO..." "INFO"
-    GPO_BACKUP_DIR="$BACKUP_DIR/gpo_backup_$DATE"
-    mkdir -p "$GPO_BACKUP_DIR"
+# Vérification LDAP
+check_ldap() {
+    local ldap_checks=()
     
-    # Utiliser samba-tool pour sauvegarder les GPO
-    samba-tool gpo backup "$GPO_BACKUP_DIR" -U "$ADMIN_USER" || {
-        log_message "Erreur lors de la sauvegarde des GPO" "ERROR"
-        send_email "ERREUR: Échec de la sauvegarde des GPO Samba" "Le script de sauvegarde n'a pas pu sauvegarder les GPO. Vérifiez les logs pour plus de détails."
-        return 1
-    }
-    
-    log_message "Sauvegarde des GPO terminée dans $GPO_BACKUP_DIR" "INFO"
-    return 0
-}
-
-# Fonction de nettoyage des anciennes sauvegardes
-cleanup_old_backups() {
-    log_message "Nettoyage des anciennes sauvegardes (plus de $RETENTION_DAYS jours)..." "INFO"
-    find "$BACKUP_DIR" -name "samba_backup_*" -type f -mtime +$RETENTION_DAYS -delete
-    find "$BACKUP_DIR" -name "gpo_backup_*" -type d -mtime +$RETENTION_DAYS -exec rm -rf {} \; 2>/dev/null || true
-    log_message "Nettoyage terminé" "INFO"
-}
-
-# Fonction principale de sauvegarde Samba
-backup_samba() {
-    log_message "Début de la sauvegarde Samba..." "INFO"
-    
-    # Vérifier et monter le partage
-    check_mount || return 1
-    
-    # Vérifier que le répertoire de sauvegarde existe
-    if [ ! -d "$BACKUP_DIR" ]; then
-        mkdir -p "$BACKUP_DIR" || {
-            log_message "Impossible de créer le répertoire $BACKUP_DIR" "ERROR"
-            send_email "ERREUR: Échec de création du répertoire de sauvegarde Samba" "Le script n'a pas pu créer le répertoire $BACKUP_DIR."
-            return 1
-        }
-    fi
-    
-    # Mode automatique : génération automatique du nom de sauvegarde
-    if [[ "$AUTO_MODE" = true ]]; then
-        CUSTOM_NAME="samba_backup_$DATE"
-        log_message "Mode automatique activé. Sauvegarde : $CUSTOM_NAME" "INFO"
+    # Vérifier la configuration LDAP via samba-tool
+    if samba-tool domain info $(hostname -f) &> /dev/null; then
+        ldap_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Annuaire LDAP</td><td>Configuré et Accessible</td></tr>")
     else
-        echo -e "${YELLOW}Entrez un nom pour la sauvegarde (laisser vide pour générer automatiquement) :${NC}"
-        read -r CUSTOM_NAME
-        if [[ -z "$CUSTOM_NAME" ]]; then
-            CUSTOM_NAME="samba_backup_$DATE"
+        ldap_checks+=("<tr style='background-color: $COLOR_RED;'><td>Annuaire LDAP</td><td>Problème de configuration</td></tr>")
+        ldap_checks+=("<tr><td colspan='2'>Impossible de récupérer les informations du domaine.</td></tr>")
+    fi
+
+    echo "${ldap_checks[@]}"
+}
+
+# Vérification DNS
+check_dns() {
+    local dns_checks=()
+    
+    local dns_processes=$(samba-tool processes | grep "dns")
+    
+    if [ -n "$dns_processes" ] && host "$DOMAIN_NAME" &> /dev/null; then
+        dns_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Serveur DNS</td><td>Actif et Fonctionnel</td></tr>")
+    else
+        dns_checks+=("<tr style='background-color: $COLOR_RED;'><td>Serveur DNS</td><td>Problème détecté</td></tr>")
+        dns_checks+=("<tr><td colspan='2'>Problème avec le service DNS.</td></tr>")
+    fi
+
+    echo "${dns_checks[@]}"
+}
+
+# Vérification de la synchronisation de l'heure
+check_time_sync() {
+    local time_checks=()
+    
+    # Vérifier si ntpd ou chronyd est installé
+    if ! command -v ntpstat &> /dev/null && ! command -v chronyc &> /dev/null; then
+        time_checks+=("<tr style='background-color: $COLOR_RED;'><td>Service NTP</td><td>Non installé</td></tr>")
+        return
+    fi
+
+    # Vérifier la synchronisation avec chronyd
+    if command -v chronyc &> /dev/null; then
+        if chronyc tracking | grep -q "^Leap status.*Normal"; then
+            local offset=$(chronyc tracking | grep "Last offset" | awk '{print $4}')
+           if [ "$(echo "$offset < 1.0" | bc -l)" -eq 1 ]; then
+                time_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Synchronisation NTP (chronyd)</td><td>Synchronisé (offset: ${offset}s)</td></tr>")
+            else
+                time_checks+=("<tr style='background-color: $COLOR_YELLOW;'><td>Synchronisation NTP (chronyd)</td><td>Offset important: ${offset}s</td></tr>")
+            fi
+        else
+            time_checks+=("<tr style='background-color: $COLOR_RED;'><td>Synchronisation NTP (chronyd)</td><td>Non synchronisé</td></tr>")
         fi
     fi
-    
-    ARCHIVE="$BACKUP_DIR/${CUSTOM_NAME}.tar.gz"
-    
-    # Nettoyer les anciennes sauvegardes
-    cleanup_old_backups
-    
-    # Sauvegarde des GPO
-    backup_gpo || return 1
-    
-    # Vérifier l'espace disque disponible
-    REQUIRED_SPACE=$(du -s "$SAMBA_PRIVATE" "$SAMBA_SYSVOL" "$SAMBA_CONFIG" | awk '{total += $1} END {print total}')
-    AVAILABLE_SPACE=$(df -k "$BACKUP_DIR" | tail -1 | awk '{print $4}')
-    
-    if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE" ]; then
-        log_message "Espace disque insuffisant pour la sauvegarde. Requis: $REQUIRED_SPACE KB, Disponible: $AVAILABLE_SPACE KB" "ERROR"
-        send_email "ERREUR: Espace disque insuffisant pour la sauvegarde Samba" "L'espace disque est insuffisant pour effectuer la sauvegarde. Requis: $REQUIRED_SPACE KB, Disponible: $AVAILABLE_SPACE KB"
-        return 1
+
+    # Vérifier la synchronisation avec ntpd
+    if command -v ntpq &> /dev/null; then
+        if ntpq -p &> /dev/null; then
+            local offset=$(ntpq -c rv | grep offset | cut -d= -f2)
+            if [ "$(echo "$offset < 1.0" | bc -l)" -eq 1 ]; then
+                time_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Synchronisation NTP (ntpd)</td><td>Synchronisé (offset: ${offset}ms)</td></tr>")
+            else
+                time_checks+=("<tr style='background-color: $COLOR_YELLOW;'><td>Synchronisation NTP (ntpd)</td><td>Offset important: ${offset}ms</td></tr>")
+            fi
+        else
+            time_checks+=("<tr style='background-color: $COLOR_RED;'><td>Synchronisation NTP (ntpd)</td><td>Non synchronisé</td></tr>")
+        fi
     fi
-    
-    # Création de l'archive
-    tar -czf "$ARCHIVE" "$SAMBA_PRIVATE" "$SAMBA_SYSVOL" "$SAMBA_CONFIG" || {
-        log_message "Erreur lors de la création de l'archive $ARCHIVE" "ERROR"
-        send_email "ERREUR: Échec de la création de l'archive Samba" "Le script n'a pas pu créer l'archive de sauvegarde $ARCHIVE."
-        return 1
-    }
-    
-    log_message "Fichiers sauvegardés dans $ARCHIVE" "INFO"
-    
-    # Sauvegarde des ACL
-    ACL_FILE="$BACKUP_DIR/${CUSTOM_NAME}_acl.acl"
-    getfacl -R "$SAMBA_SYSVOL" > "$ACL_FILE" || {
-        log_message "Erreur lors de la sauvegarde des ACL dans $ACL_FILE" "WARNING"
-        # On continue malgré cette erreur, car ce n'est pas critique
-    }
-    
-    log_message "ACL sauvegardées dans $ACL_FILE" "INFO"
-    
-    # Vérifier la taille de l'archive créée
-    if [ -f "$ARCHIVE" ]; then
-        ARCHIVE_SIZE=$(du -h "$ARCHIVE" | cut -f1)
-        log_message "Sauvegarde terminée. Taille de l'archive: $ARCHIVE_SIZE" "INFO"
-        send_email "Sauvegarde Samba réussie" "La sauvegarde Samba a été effectuée avec succès.\nArchive: $ARCHIVE\nTaille: $ARCHIVE_SIZE"
-    else
-        log_message "L'archive $ARCHIVE n'existe pas après la sauvegarde" "ERROR"
-        send_email "ERREUR: Échec de la sauvegarde Samba" "L'archive de sauvegarde $ARCHIVE n'a pas été créée correctement."
-        return 1
-    fi
-    
-    return 0
+
+    echo "${time_checks[@]}"
 }
 
-# Fonction de restauration
-restore_samba() {
-    log_message "Début de la restauration Samba..." "INFO"
+# Vérification des ports UFW
+check_ufw_ports() {
+    local ufw_checks=()
     
-    # Vérifier et monter le partage
-    check_mount || return 1
-    
-    if [[ ! -d "$BACKUP_DIR" ]] || [[ -z $(ls -A "$BACKUP_DIR" | grep "tar.gz") ]]; then
-        log_message "Aucune sauvegarde trouvée dans $BACKUP_DIR" "ERROR"
-        return 1
+    # Vérifier si UFW est installé
+    if ! command -v ufw &> /dev/null; then
+        ufw_checks+=("<tr style='background-color: $COLOR_YELLOW;'><td>UFW</td><td>Non installé</td></tr>")
+        return
     fi
-    
-    echo -e "${YELLOW}Liste des sauvegardes disponibles :${NC}"
-    ls -1 "$BACKUP_DIR" | grep "tar.gz" | nl
-    
-    echo -e "${YELLOW}Choisissez le numéro de la sauvegarde à restaurer :${NC}"
-    read -r BACKUP_CHOICE
-    BACKUP_FILE=$(ls -1 "$BACKUP_DIR" | grep "tar.gz" | sed -n "${BACKUP_CHOICE}p")
-    
-    if [[ -z "$BACKUP_FILE" ]]; then
-        log_message "Sélection invalide" "ERROR"
-        return 1
+
+    # Vérifier si UFW est actif
+    if ! ufw status | grep -q "Status: active"; then
+        ufw_checks+=("<tr style='background-color: $COLOR_YELLOW;'><td>UFW Status</td><td>Inactif</td></tr>")
+        return
     fi
-    
-    BACKUP_PATH="$BACKUP_DIR/$BACKUP_FILE"
-    log_message "Sauvegarde sélectionnée : $BACKUP_FILE" "INFO"
-    
-    echo -e "${YELLOW}Arrêt du service Samba...${NC}"
-    systemctl stop samba-ad-dc || {
-        log_message "Erreur lors de l'arrêt du service samba-ad-dc" "ERROR"
-        return 1
-    }
-    
-    # Sauvegarde des fichiers actuels avant restauration
-    BACKUP_ORIG_DIR="$BACKUP_DIR/original_$DATE"
-    mkdir -p "$BACKUP_ORIG_DIR"
-    log_message "Sauvegarde des fichiers originaux dans $BACKUP_ORIG_DIR" "INFO"
-    
-    tar -czf "$BACKUP_ORIG_DIR/original_samba_files.tar.gz" "$SAMBA_PRIVATE" "$SAMBA_SYSVOL" "$SAMBA_CONFIG" || {
-        log_message "Erreur lors de la sauvegarde des fichiers originaux" "WARNING"
-        echo -e "${YELLOW}Voulez-vous continuer la restauration quand même ? (o/n) :${NC}"
-        read -r CONTINUE_RESTORE
-        if [[ "$CONTINUE_RESTORE" != "o" ]]; then
-            systemctl start samba-ad-dc
-            log_message "Restauration annulée par l'utilisateur" "INFO"
-            return 1
+
+    # Vérifier chaque port requis
+    for port in "${REQUIRED_PORTS[@]}"; do
+        if ufw status | grep -qE "^$port/(tcp|udp).*ALLOW"; then
+            ufw_checks+=("<tr style='background-color: $COLOR_GREEN;'><td>Port $port</td><td>Ouvert</td></tr>")
+        else
+            ufw_checks+=("<tr style='background-color: $COLOR_RED;'><td>Port $port</td><td>Fermé</td></tr>")
         fi
-    }
-    
-    # Extraction de l'archive
-    tar -xzf "$BACKUP_PATH" -C / || {
-        log_message "Erreur lors de l'extraction de l'archive $BACKUP_PATH" "ERROR"
-        echo -e "${RED}La restauration a échoué. Voulez-vous restaurer les fichiers originaux ? (o/n) :${NC}"
-        read -r RESTORE_ORIG
-        if [[ "$RESTORE_ORIG" == "o" ]]; then
-            tar -xzf "$BACKUP_ORIG_DIR/original_samba_files.tar.gz" -C /
-            log_message "Fichiers originaux restaurés" "INFO"
-        fi
-        systemctl start samba-ad-dc
-        return 1
-    }
-    
-    # Restauration des ACL
-    ACL_FILE="$BACKUP_DIR/${BACKUP_FILE%.tar.gz}_acl.acl"
-    if [[ -f "$ACL_FILE" ]]; then
-        setfacl --restore="$ACL_FILE"
-        log_message "ACL restaurées depuis $ACL_FILE" "INFO"
-    else
-        log_message "Fichier ACL introuvable. Les permissions SYSVOL doivent être réinitialisées." "WARNING"
-    fi
-    
-    echo -e "${YELLOW}Réinitialisation des permissions SYSVOL...${NC}"
-    samba-tool ntacl sysvolreset || log_message "Erreur lors de la réinitialisation des permissions SYSVOL" "WARNING"
-    
-    echo -e "${YELLOW}Redémarrage du service Samba...${NC}"
-    systemctl start samba-ad-dc || {
-        log_message "Erreur lors du redémarrage du service samba-ad-dc" "ERROR"
-        send_email "ERREUR: Échec du redémarrage de Samba après restauration" "Le service samba-ad-dc n'a pas pu être redémarré après la restauration. Une intervention manuelle est requise."
-        return 1
-    }
-    
-    log_message "Restauration Samba terminée avec succès" "INFO"
-    send_email "Restauration Samba réussie" "La restauration de Samba a été effectuée avec succès à partir de $BACKUP_PATH."
-    return 0
+    done
+
+    echo "${ufw_checks[@]}"
 }
 
-# Vérification des privilèges root
-if [[ $EUID -ne 0 ]]; then
-    log_message "Ce script doit être exécuté en tant que root" "ERROR"
-    exit 1
-fi
+# Génération du rapport HTML
+generate_html_report() {
+    cat << EOF > "$REPORT_FILE"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rapport Monitoring Samba AD DC - $SERVER_NAME</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        h2 { color: #333; margin-top: 20px; }
+        pre { white-space: pre-wrap; word-wrap: break-word; }
+    </style>
+</head>
+<body>
+    <h1>Rapport de Monitoring Samba AD DC - $SERVER_NAME - $(date '+%d/%m/%Y %H:%M:%S')</h1>
 
-# Parsing des arguments
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --auto)
-            AUTO_MODE=true
-            shift
-            ;;
-        --retention=*)
-            RETENTION_DAYS="${1#*=}"
-            shift
-            ;;
-        *)
-            log_message "Option non reconnue: $1" "ERROR"
-            exit 1
-            ;;
-    esac
-done
+    <h2>Processus Samba AD</h2>
+    <table>
+        $(check_samba_processes)
+    </table>
+    
+    <h2>Processus Syncthing Sysvol</h2>
+    <table>
+        $(check_syncthing_processes)
+    </table>
+    
+    <h2>Processus tis-sysvol services</h2>
+    <table>
+        $(check_tis_services)
+    </table>
+    
+    <h2>Authentification Kerberos</h2>
+    <table>
+        $(check_kerberos)
+    </table>
 
-# Menu principal modifié pour supporter le mode auto
-if [[ "$AUTO_MODE" = true ]]; then
-    backup_samba
-    exit_code=$?
-    exit $exit_code
-else
-    echo -e "${YELLOW}Samba Backup & Restore Script${NC}"
-    echo -e "${GREEN}1. Sauvegarder Samba${NC}"
-    echo -e "${GREEN}2. Restaurer Samba${NC}"
-    echo -e "${GREEN}3. Quitter${NC}"
-    echo -e "Choisissez une option :"
-    read -r OPTION
+    <h2>Annuaire LDAP</h2>
+    <table>
+        $(check_ldap)
+    </table>
 
-    case $OPTION in
-        1)
-            backup_samba
-            ;;
-        2)
-            restore_samba
-            ;;
-        3)
-            echo -e "${GREEN}Quitter...${NC}"
-            exit 0
-            ;;
-        *)
-            log_message "Option invalide" "ERROR"
-            exit 1
-            ;;
-    esac
-fi
+    <h2>Serveur DNS</h2>
+    <table>
+        $(check_dns)
+    </table>
+
+     <h2>Synchronisation de l'heure</h2>
+    <table>
+        $(check_time_sync)
+    </table>
+
+    <h2>État des ports UFW</h2>
+    <table>
+        $(check_ufw_ports)
+    </table>
+
+    <h2>État de la Base de Données AD</h2>
+    <table>
+        $(check_database_consistency)
+    </table>
+</body>
+</html>
+EOF
+}
+
+# Envoi du rapport par email
+send_email_report() {
+    if [ -f "$REPORT_FILE" ]; then
+        if command -v sendmail &> /dev/null; then
+            (
+                echo "To: $ADMIN_EMAIL"
+                echo "Subject: Rapport Monitoring Samba AD DC - $SERVER_NAME - $(date '+%d/%m/%Y')"
+                echo "Content-Type: text/html"
+                echo ""
+                cat "$REPORT_FILE"
+            ) | sendmail -t
+            log_message "Rapport envoyé via sendmail à $ADMIN_EMAIL"
+        elif command -v ssmtp &> /dev/null; then
+            (
+                echo "To: $ADMIN_EMAIL"
+                echo "Subject: Rapport Monitoring Samba AD DC - $SERVER_NAME - $(date '+%d/%m/%Y')"
+                echo "Content-Type: text/html"
+                echo ""
+                cat "$REPORT_FILE"
+            ) | ssmtp "$ADMIN_EMAIL"
+            log_message "Rapport envoyé via ssmtp à $ADMIN_EMAIL"
+        else
+            log_message "Aucun outil d'envoi d'email (sendmail/ssmtp) trouvé. Le rapport n'a pas été envoyé."
+        fi
+    else
+        log_message "Le fichier de rapport $REPORT_FILE n'existe pas. Impossible d'envoyer l'email."
+    fi
+}
+
+# Démarrage du monitoring
+log_message "Démarrage du script de monitoring"
+check_ldap_tools
+generate_html_report
+send_email_report
+log_message "Script terminé avec succès"
